@@ -247,6 +247,23 @@ class ProviderConfig(Base):
     extra_headers: dict[str, str] | None = None  # Custom headers (e.g. APP-Code for AiHubMix)
 
 
+class FailoverConfig(Base):
+    """Provider failover configuration."""
+
+    enabled: bool = True  # Default enabled
+    max_retries_per_provider: int = 2
+    initial_backoff_seconds: float = 1.0
+    max_backoff_seconds: float = 32.0
+    backoff_multiplier: float = 2.0
+    provider_priority: list[str] = Field(
+        default_factory=lambda: ["anthropic", "openai", "deepseek", "groq"]
+    )
+    # Optional: per-provider model mapping
+    model_mapping: dict[str, dict[str, str]] = Field(
+        default_factory=dict
+    )  # {"openai": {"anthropic/claude-3-5-sonnet": "gpt-4o"}}
+
+
 class ProvidersConfig(Base):
     """Configuration for LLM providers."""
 
@@ -268,6 +285,7 @@ class ProvidersConfig(Base):
     volcengine: ProviderConfig = Field(default_factory=ProviderConfig)  # VolcEngine (火山引擎)
     openai_codex: ProviderConfig = Field(default_factory=ProviderConfig)  # OpenAI Codex (OAuth)
     github_copilot: ProviderConfig = Field(default_factory=ProviderConfig)  # Github Copilot (OAuth)
+    failover: FailoverConfig = Field(default_factory=FailoverConfig)  # Failover configuration
 
 
 class HeartbeatConfig(Base):

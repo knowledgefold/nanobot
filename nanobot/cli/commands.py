@@ -212,6 +212,7 @@ def onboard():
 
 def _make_provider(config: Config):
     """Create the appropriate LLM provider from config."""
+    from nanobot.providers.failover_provider import FailoverProvider
     from nanobot.providers.openai_codex_provider import OpenAICodexProvider
     from nanobot.providers.azure_openai_provider import AzureOpenAIProvider
 
@@ -219,11 +220,11 @@ def _make_provider(config: Config):
     provider_name = config.get_provider_name(model)
     p = config.get_provider(model)
 
-    # OpenAI Codex (OAuth)
+    # OpenAI Codex (OAuth) - bypasses failover
     if provider_name == "openai_codex" or model.startswith("openai-codex/"):
         return OpenAICodexProvider(default_model=model)
 
-    # Custom: direct OpenAI-compatible endpoint, bypasses LiteLLM
+    # Custom: direct OpenAI-compatible endpoint, bypasses LiteLLM and failover
     from nanobot.providers.custom_provider import CustomProvider
     if provider_name == "custom":
         return CustomProvider(
@@ -232,20 +233,29 @@ def _make_provider(config: Config):
             default_model=model,
         )
 
-    # Azure OpenAI: direct Azure OpenAI endpoint with deployment name
+    # Azure OpenAI: direct Azure OpenAI endpoint with deployment name, bypasses failover
     if provider_name == "azure_openai":
         if not p or not p.api_key or not p.api_base:
             console.print("[red]Error: Azure OpenAI requires api_key and api_base.[/red]")
             console.print("Set them in ~/.nanobot/config.json under providers.azure_openai section")
             console.print("Use the model field to specify the deployment name.")
             raise typer.Exit(1)
-        
+
         return AzureOpenAIProvider(
             api_key=p.api_key,
             api_base=p.api_base,
             default_model=model,
         )
 
+    # For standard providers, check if failover is enabled
+    if config.providers.failover.enabled:
+        return FailoverProvider(
+            config=config,
+            model=model,
+            failover_config=config.providers.failover,
+        )
+
+    # Failover disabled - use single provider directly
     from nanobot.providers.litellm_provider import LiteLLMProvider
     from nanobot.providers.registry import find_by_name
     spec = find_by_name(provider_name)
