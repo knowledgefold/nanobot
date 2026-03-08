@@ -66,6 +66,14 @@ class CronTool(Tool):
                     "description": "ISO datetime for one-time execution (e.g. '2026-02-12T10:30:00')",
                 },
                 "job_id": {"type": "string", "description": "Job ID (for remove)"},
+                "to": {
+                    "type": "string",
+                    "description": "Target chat/user ID for delivery (optional, defaults to current session)",
+                },
+                "channel": {
+                    "type": "string",
+                    "description": "Target channel for delivery (optional, defaults to current session)",
+                },
             },
             "required": ["action"],
         }
@@ -79,12 +87,14 @@ class CronTool(Tool):
         tz: str | None = None,
         at: str | None = None,
         job_id: str | None = None,
+        to: str | None = None,
+        channel: str | None = None,
         **kwargs: Any,
     ) -> str:
         if action == "add":
             if self._in_cron_context.get():
                 return "Error: cannot schedule new jobs from within a cron job execution"
-            return self._add_job(message, every_seconds, cron_expr, tz, at)
+            return self._add_job(message, every_seconds, cron_expr, tz, at, to, channel)
         elif action == "list":
             return self._list_jobs()
         elif action == "remove":
@@ -98,11 +108,11 @@ class CronTool(Tool):
         cron_expr: str | None,
         tz: str | None,
         at: str | None,
+        to: str | None,
+        channel: str | None,
     ) -> str:
         if not message:
             return "Error: message is required for add"
-        if not self._channel or not self._chat_id:
-            return "Error: no session context (channel/chat_id)"
         if tz and not cron_expr:
             return "Error: tz can only be used with cron_expr"
         if tz:
@@ -132,13 +142,20 @@ class CronTool(Tool):
         else:
             return "Error: either every_seconds, cron_expr, or at is required"
 
+        # Priority: explicit parameters > session context
+        target_channel = channel or self._channel
+        target_to = to or self._chat_id
+
+        if not target_channel or not target_to:
+            return "Error: no session context (channel/chat_id) and no explicit to/channel provided"
+
         job = self._cron.add_job(
             name=message[:30],
             schedule=schedule,
             message=message,
             deliver=True,
-            channel=self._channel,
-            to=self._chat_id,
+            channel=target_channel,
+            to=target_to,
             delete_after_run=delete_after,
         )
         return f"Created job '{job.name}' (id: {job.id})"
