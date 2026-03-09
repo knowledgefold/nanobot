@@ -391,7 +391,28 @@ class AgentLoop:
                                   content="New session started.")
         if cmd == "/help":
             return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id,
-                                  content="🐈 nanobot commands:\n/new — Start a new conversation\n/stop — Stop the current task\n/help — Show available commands")
+                                  content="🐈 nanobot commands:\n/new — Start a new conversation\n/stop — Stop the current task\n/switch — Switch to next provider\n/help — Show available commands")
+
+        if cmd == "/switch":
+            # Try to cast provider to FailoverProvider
+            if hasattr(self.provider, 'switch_to_next_provider'):
+                old_provider = self.provider.get_current_provider()
+                new_provider = self.provider.switch_to_next_provider()
+                if new_provider:
+                    return OutboundMessage(
+                        channel=msg.channel, chat_id=msg.chat_id,
+                        content=f"Provider switched: {old_provider} → {new_provider}"
+                    )
+                else:
+                    return OutboundMessage(
+                        channel=msg.channel, chat_id=msg.chat_id,
+                        content="No other providers available to switch to."
+                    )
+            else:
+                return OutboundMessage(
+                    channel=msg.channel, chat_id=msg.chat_id,
+                    content="Provider switching not available (failover disabled)."
+                )
 
         unconsolidated = len(session.messages) - session.last_consolidated
         if (unconsolidated >= self.memory_window and session.key not in self._consolidating):

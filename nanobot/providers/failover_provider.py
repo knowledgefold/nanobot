@@ -78,6 +78,27 @@ class FailoverProvider(LLMProvider):
         logger.debug(f"Failover provider list: {providers}")
         return providers
 
+    def get_current_provider(self) -> str | None:
+        """Get the current provider name."""
+        return self._providers[0] if self._providers else None
+
+    def switch_to_next_provider(self) -> str | None:
+        """Manually switch to the next available provider.
+
+        Returns:
+            The name of the new current provider, or None if no more providers available.
+        """
+        if len(self._providers) <= 1:
+            return None
+
+        # Remove current provider from the list
+        removed = self._providers.pop(0)
+        # Remove cached instance to force recreation
+        self._provider_instances.pop(removed, None)
+
+        logger.info(f"Switched from {removed} to {self._providers[0]}")
+        return self._providers[0] if self._providers else None
+
     def _is_provider_available(self, provider_name: str) -> bool:
         """Check if provider has API key configured (OAuth providers exempt)."""
         from nanobot.providers.registry import find_by_name
