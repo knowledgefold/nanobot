@@ -85,23 +85,27 @@ class FailoverProvider(LLMProvider):
     def switch_to_next_provider(self) -> str | None:
         """Manually switch to the next available provider.
 
+        Providers rotate - the current provider is moved to the end of the list
+        so it can be used again after cycling through all providers.
+
         Returns:
-            The name of the new current provider, or None if no more providers available.
+            The name of the new current provider, or None if only one provider available.
         """
         if len(self._providers) <= 1:
             return None
 
-        # Remove current provider from the list
-        removed = self._providers.pop(0)
+        # Rotate: move current provider to the end of the list
+        current = self._providers.pop(0)
+        self._providers.append(current)
 
-        # Clean up resources from the old provider
-        old_instance = self._provider_instances.pop(removed, None)
+        # Clean up and remove the cached instance so it re-initializes fresh when used again
+        old_instance = self._provider_instances.pop(current, None)
         if old_instance:
-            logger.debug(f"Cleaning up resources from {removed}")
+            logger.debug(f"Cleaning up resources from {current}")
             old_instance.cleanup()
 
-        logger.info(f"Switched from {removed} to {self._providers[0]}")
-        return self._providers[0] if self._providers else None
+        logger.info(f"Rotated providers: {current} -> {self._providers[0]}")
+        return self._providers[0]
 
     def _is_provider_available(self, provider_name: str) -> bool:
         """Check if provider has API key configured (OAuth providers exempt)."""
