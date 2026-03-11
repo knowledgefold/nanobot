@@ -94,7 +94,13 @@ class LiteLLMProvider(LLMProvider):
             os.environ.setdefault(env_name, resolved)
 
     def _resolve_model(self, model: str) -> str:
-        """Resolve model name by applying provider/gateway prefixes."""
+        """Resolve model name by applying provider/gateway prefixes.
+
+        Priority chain for model resolution:
+        1. gateway: If provider is a gateway (e.g., OpenRouter), use gateway prefix
+        2. provider_name: If provider_name is set, use that provider's prefix
+        3. model: Auto-detect provider from model name and apply its prefix
+        """
         if self._gateway:
             # Gateway mode: apply gateway prefix, skip provider-specific prefixes
             prefix = self._gateway.litellm_prefix

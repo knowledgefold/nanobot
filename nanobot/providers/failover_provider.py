@@ -17,7 +17,7 @@ class FailoverProvider(LLMProvider):
     When a provider fails, this class automatically:
     1. Retries temporary errors (timeouts, rate limits, server errors) with exponential backoff
     2. Switches to the next available provider for fatal errors (auth failures, invalid model)
-    3. Optionally maps model names for different providers
+    3. Uses each provider's own configured model when failing over
 
     Example:
         provider = FailoverProvider(
@@ -236,7 +236,9 @@ class FailoverProvider(LLMProvider):
         try:
             # OpenAI Codex (OAuth)
             if provider_name == "openai_codex":
-                instance = OpenAICodexProvider(default_model=self.default_model)
+                # Use provider's own configured model if available, otherwise fall back to default
+                provider_model = provider_config.model or self.default_model
+                instance = OpenAICodexProvider(default_model=provider_model)
 
             # Custom: direct OpenAI-compatible endpoint
             elif provider_name == "custom":
