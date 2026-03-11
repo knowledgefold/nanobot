@@ -45,6 +45,7 @@ class LiteLLMProvider(LLMProvider):
         self.default_model = default_model
         self.extra_headers = extra_headers or {}
         self._provider_name = provider_name
+        self._env_vars_set: set[str] = set()  # Track env vars we set for cleanup
 
         # Detect gateway / local deployment.
         # provider_name (from config key) is the primary signal;
@@ -53,23 +54,24 @@ class LiteLLMProvider(LLMProvider):
 
         # Configure environment variables
         if api_key:
-            self._setup_env(api_key, api_base, default_model, provider_name)
+            self._setup_env(api_key, api_base, default_model)
 
-        if api_base:
-            litellm.api_base = api_base
+        # NOTE: Global litellm.api_base is NOT set here to avoid cross-provider
+        # contamination when switching providers. Each provider passes api_base
+        # per-request via kwargs["api_base"] in chat() method (line 276).
 
         # Disable LiteLLM logging noise
         litellm.suppress_debug_info = True
         # Drop unsupported parameters for providers (e.g., gpt-5 rejects some params)
         litellm.drop_params = True
 
-    def _setup_env(self, api_key: str, api_base: str | None, model: str, provider_name: str | None = None) -> None:
+    def _setup_env(self, api_key: str, api_base: str | None, model: str) -> None:
         """Set environment variables based on detected provider."""
         # Use gateway if available, otherwise find by provider_name, then by model (legacy fallback)
         spec = self._gateway
-        if not spec and provider_name:
+        if not spec and self._provider_name:
             from nanobot.providers.registry import find_by_name
-            spec = find_by_name(provider_name)
+            spec = find_by_name(self._provider_name)
         if not spec:
             spec = find_by_model(model)
         if not spec:
@@ -80,9 +82,9 @@ class LiteLLMProvider(LLMProvider):
 
         # Gateway/local overrides existing env; standard provider doesn't
         if self._gateway:
-            os.environ[spec.env_key] = api_key
+            self._set_env_var(spec.env_key, api_key, force=True)
         else:
-            os.environ.setdefault(spec.env_key, api_key)
+            self._set_env_var(spec.env_key, api_key)
 
         # Resolve env_extras placeholders:
         #   {api_key}  → user's API key
@@ -91,7 +93,31 @@ class LiteLLMProvider(LLMProvider):
         for env_name, env_val in spec.env_extras:
             resolved = env_val.replace("{api_key}", api_key)
             resolved = resolved.replace("{api_base}", effective_base)
-            os.environ.setdefault(env_name, resolved)
+            self._set_env_var(env_name, resolved)
+
+    def _set_env_var(self, key: str, value: str, force: bool = False) -> None:
+        """Set environment variable and track it for cleanup.
+
+        Args:
+            key: Environment variable name
+            value: Value to set
+            force: If True, overwrite existing value; otherwise only set if not present
+        """
+        if force or key not in os.environ:
+            os.environ[key] = value
+            self._env_vars_set.add(key)
+
+    def cleanup(self) -> None:
+        """Clean up environment variables set by this provider instance.
+
+        This is important when switching providers to prevent environment
+        variable contamination - env vars from the old provider could
+        interfere with the new provider's configuration.
+        """
+        for env_var in self._env_vars_set:
+            logger.debug(f"Cleaning up env var: {env_var}")
+            os.environ.pop(env_var, None)
+        self._env_vars_set.clear()
 
     def _resolve_model(self, model: str) -> str:
         """Resolve model name by applying provider/gateway prefixes.

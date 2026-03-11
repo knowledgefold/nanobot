@@ -126,6 +126,14 @@ class LLMProvider(ABC):
         """
         pass
 
+    def cleanup(self) -> None:
+        """Clean up resources (default no-op implementation).
+
+        Subclasses may override this to release resources like environment
+        variables or network connections when the provider is no longer needed.
+        """
+        pass
+
     @abstractmethod
     def get_default_model(self) -> str:
         """Get the default model for this provider."""

@@ -93,8 +93,12 @@ class FailoverProvider(LLMProvider):
 
         # Remove current provider from the list
         removed = self._providers.pop(0)
-        # Remove cached instance to force recreation
-        self._provider_instances.pop(removed, None)
+
+        # Clean up resources from the old provider
+        old_instance = self._provider_instances.pop(removed, None)
+        if old_instance:
+            logger.debug(f"Cleaning up resources from {removed}")
+            old_instance.cleanup()
 
         logger.info(f"Switched from {removed} to {self._providers[0]}")
         return self._providers[0] if self._providers else None
