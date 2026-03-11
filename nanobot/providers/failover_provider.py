@@ -107,18 +107,21 @@ class FailoverProvider(LLMProvider):
         if not spec:
             return False
 
-        # OAuth providers are always available (they use interactive login)
+        provider_config = getattr(self.config.providers, provider_name, None)
+        if not provider_config:
+            return False
+
+        # OAuth providers need explicit config (can't rely on interactive login in CLI)
         if spec.is_oauth:
-            return True
+            # OAuth providers are only available if explicitly configured with api_base
+            return bool(provider_config.api_base)
 
         # Direct providers (custom, azure_openai) require explicit config
         if spec.is_direct:
-            provider_config = getattr(self.config.providers, provider_name, None)
-            return provider_config is not None and bool(provider_config.api_key)
+            return bool(provider_config.api_key)
 
         # Standard providers need API key
-        provider_config = getattr(self.config.providers, provider_name, None)
-        return provider_config is not None and bool(provider_config.api_key)
+        return bool(provider_config.api_key)
 
     def _classify_error(self, error: Exception) -> str:
         """Classify error as 'retryable', 'fatal', or 'unknown'.
@@ -200,19 +203,6 @@ class FailoverProvider(LLMProvider):
 
         return None
 
-    def _map_model_for_provider(self, provider_name: str, model: str) -> str:
-        """Map model name for a specific provider.
-
-        Args:
-            provider_name: Name of the target provider
-            model: Original model name
-
-        Returns:
-            Mapped model name, or original if no mapping exists
-        """
-        mapping = self.failover_config.model_mapping.get(provider_name, {})
-        return mapping.get(model, model)
-
     def _get_provider_instance(self, provider_name: str) -> LLMProvider | None:
         """Get or create provider instance.
 
@@ -252,28 +242,32 @@ class FailoverProvider(LLMProvider):
             elif provider_name == "custom":
                 # For custom provider, use provider's own api_base or default
                 api_base = provider_config.api_base or "http://localhost:8000/v1"
+                provider_model = provider_config.model or self.default_model
                 instance = CustomProvider(
                     api_key=provider_config.api_key or "no-key",
                     api_base=api_base,
-                    default_model=self.default_model,
+                    default_model=provider_model,
                 )
 
             # Azure OpenAI
             elif provider_name == "azure_openai":
+                provider_model = provider_config.model or self.default_model
                 instance = AzureOpenAIProvider(
                     api_key=provider_config.api_key,
                     api_base=provider_config.api_base,
-                    default_model=self.default_model,
+                    default_model=provider_model,
                 )
 
             # Standard LiteLLM providers
             else:
                 # Get api_base from provider config or spec default
                 api_base = provider_config.api_base or (spec.default_api_base if spec else None)
+                # Use provider's own configured model if available, otherwise fall back to default
+                provider_model = provider_config.model or self.default_model
                 instance = LiteLLMProvider(
                     api_key=provider_config.api_key,
                     api_base=api_base,
-                    default_model=self.default_model,
+                    default_model=provider_model,
                     extra_headers=provider_config.extra_headers,
                     provider_name=provider_name,
                 )
@@ -339,16 +333,16 @@ class FailoverProvider(LLMProvider):
             if not provider:
                 continue
 
-            # Map model name for this provider
-            mapped_model = self._map_model_for_provider(provider_name, original_model)
+            # Use each provider's own configured model (set during instance creation)
+            provider_model = provider.get_default_model()
 
-            logger.info(f"Attempting provider: {provider_name} with model: {mapped_model}")
+            logger.info(f"Attempting provider: {provider_name} with model: {provider_model}")
 
             result = await self._try_provider_with_retry(
                 provider=provider,
                 messages=messages,
                 tools=tools,
-                model=mapped_model,
+                model=provider_model,
                 max_tokens=max_tokens,
                 temperature=temperature,
                 reasoning_effort=reasoning_effort,

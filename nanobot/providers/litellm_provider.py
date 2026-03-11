@@ -44,6 +44,7 @@ class LiteLLMProvider(LLMProvider):
         super().__init__(api_key, api_base)
         self.default_model = default_model
         self.extra_headers = extra_headers or {}
+        self._provider_name = provider_name
 
         # Detect gateway / local deployment.
         # provider_name (from config key) is the primary signal;
@@ -52,7 +53,7 @@ class LiteLLMProvider(LLMProvider):
 
         # Configure environment variables
         if api_key:
-            self._setup_env(api_key, api_base, default_model)
+            self._setup_env(api_key, api_base, default_model, provider_name)
 
         if api_base:
             litellm.api_base = api_base
@@ -62,9 +63,15 @@ class LiteLLMProvider(LLMProvider):
         # Drop unsupported parameters for providers (e.g., gpt-5 rejects some params)
         litellm.drop_params = True
 
-    def _setup_env(self, api_key: str, api_base: str | None, model: str) -> None:
+    def _setup_env(self, api_key: str, api_base: str | None, model: str, provider_name: str | None = None) -> None:
         """Set environment variables based on detected provider."""
-        spec = self._gateway or find_by_model(model)
+        # Use gateway if available, otherwise find by provider_name, then by model (legacy fallback)
+        spec = self._gateway
+        if not spec and provider_name:
+            from nanobot.providers.registry import find_by_name
+            spec = find_by_name(provider_name)
+        if not spec:
+            spec = find_by_model(model)
         if not spec:
             return
         if not spec.env_key:
@@ -97,8 +104,13 @@ class LiteLLMProvider(LLMProvider):
                 model = f"{prefix}/{model}"
             return model
 
-        # Standard mode: auto-prefix for known providers
-        spec = find_by_model(model)
+        # Standard mode: use provider_name if available, otherwise auto-detect from model
+        if self._provider_name:
+            from nanobot.providers.registry import find_by_name
+            spec = find_by_name(self._provider_name)
+        else:
+            spec = find_by_model(model)
+
         if spec and spec.litellm_prefix:
             model = self._canonicalize_explicit_prefix(model, spec.name, spec.litellm_prefix)
             if not any(model.startswith(s) for s in spec.skip_prefixes):

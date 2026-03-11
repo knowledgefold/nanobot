@@ -19,17 +19,17 @@ def mock_config():
     # Mock provider configs - no spec to allow dynamic attributes
     providers = MagicMock()
     providers.anthropic.api_key = "sk-ant-test"
+    providers.anthropic.model = "anthropic/claude-3-5-sonnet"
     providers.openai.api_key = "sk-openai-test"
+    providers.openai.model = "gpt-4o"
     providers.deepseek.api_key = "sk-deepseek-test"
+    providers.deepseek.model = "deepseek-chat"
     providers.groq.api_key = "sk-groq-test"
+    providers.groq.model = "llama-3.3-70b"
     providers.failover = FailoverConfig(
         enabled=True,
         max_retries_per_provider=2,
         provider_priority=["anthropic", "openai", "deepseek", "groq"],
-        model_mapping={
-            "openai": {"anthropic/claude-3-5-sonnet": "gpt-4o"},
-            "deepseek": {"anthropic/claude-3-5-sonnet": "deepseek-chat"},
-        },
     )
 
     # Mock get_provider and get_provider_name
@@ -81,24 +81,22 @@ class TestFailoverProvider:
         assert "deepseek" in provider._providers
         assert "groq" in provider._providers
 
-    def test_model_mapping(self, mock_config):
-        """Test that model names are mapped correctly for different providers."""
+    def test_provider_uses_own_configured_model(self, mock_config):
+        """Test that each provider uses its own configured model from config."""
         provider = FailoverProvider(
             config=mock_config,
             model="anthropic/claude-3-5-sonnet",
         )
 
-        # Test mapping for OpenAI
-        mapped = provider._map_model_for_provider("openai", "anthropic/claude-3-5-sonnet")
-        assert mapped == "gpt-4o"
+        # Get provider instances and verify they use their configured models
+        anthropic_provider = provider._get_provider_instance("anthropic")
+        assert anthropic_provider.get_default_model() == "anthropic/claude-3-5-sonnet"
 
-        # Test mapping for DeepSeek
-        mapped = provider._map_model_for_provider("deepseek", "anthropic/claude-3-5-sonnet")
-        assert mapped == "deepseek-chat"
+        openai_provider = provider._get_provider_instance("openai")
+        assert openai_provider.get_default_model() == "gpt-4o"
 
-        # Test no mapping (original model returned)
-        mapped = provider._map_model_for_provider("groq", "anthropic/claude-3-5-sonnet")
-        assert mapped == "anthropic/claude-3-5-sonnet"
+        deepseek_provider = provider._get_provider_instance("deepseek")
+        assert deepseek_provider.get_default_model() == "deepseek-chat"
 
     def test_error_classification(self, mock_config):
         """Test that errors are classified correctly."""
@@ -155,6 +153,39 @@ class TestFailoverProvider:
         # Unknown providers are not available
         assert not provider._is_provider_available("unknown_provider")
 
+    def test_oauth_provider_without_api_base_not_available(self, mock_config):
+        """Test that OAuth providers without api_base are not available."""
+        provider = FailoverProvider(
+            config=mock_config,
+            model="anthropic/claude-3-5-sonnet",
+        )
+
+        # OAuth providers without api_base should not be available
+        # Remove any existing api_base from the mock
+        mock_config.providers.github_copilot.api_base = None
+        mock_config.providers.github_copilot.model = None
+        mock_config.providers.openai_codex.api_base = None
+        mock_config.providers.openai_codex.model = None
+
+        assert not provider._is_provider_available("github_copilot")
+        assert not provider._is_provider_available("openai_codex")
+
+    def test_oauth_provider_with_api_base_available(self, mock_config):
+        """Test that OAuth providers with api_base are available."""
+        provider = FailoverProvider(
+            config=mock_config,
+            model="anthropic/claude-3-5-sonnet",
+        )
+
+        # OAuth providers with api_base should be available
+        mock_config.providers.github_copilot.api_base = "https://api.github.com/copilot"
+        mock_config.providers.github_copilot.model = "github-copilot/gpt-4"
+        mock_config.providers.openai_codex.api_base = "https://chatgpt.com/backend-api"
+        mock_config.providers.openai_codex.model = "openai/gpt-4"
+
+        assert provider._is_provider_available("github_copilot")
+        assert provider._is_provider_available("openai_codex")
+
     @pytest.mark.asyncio
     async def test_successful_chat_primary_provider(self, mock_config):
         """Test successful chat with primary provider."""
@@ -191,6 +222,7 @@ class TestFailoverProvider:
 
         # Mock primary provider to fail with fatal auth error
         mock_primary = AsyncMock()
+        mock_primary.get_default_model = MagicMock(return_value="anthropic/claude-3-5-sonnet")
         mock_primary.chat.side_effect = AuthenticationError(
             llm_provider="anthropic",
             model="claude-3-5-sonnet",
@@ -199,6 +231,7 @@ class TestFailoverProvider:
 
         # Mock secondary provider to succeed
         mock_secondary = AsyncMock()
+        mock_secondary.get_default_model = MagicMock(return_value="gpt-4o")
         mock_secondary.chat.return_value = LLMResponse(
             content="Hello from GPT-4o!",
             finish_reason="stop",
@@ -215,9 +248,9 @@ class TestFailoverProvider:
         assert mock_primary.chat.call_count == 1  # Tried once (fatal error, no retry)
         mock_secondary.chat.assert_called_once()
 
-        # Verify the model was mapped for OpenAI
+        # Verify the OpenAI provider's configured model was used
         call_kwargs = mock_secondary.chat.call_args.kwargs
-        assert call_kwargs["model"] == "gpt-4o"
+        assert call_kwargs["model"] == "gpt-4o"  # openai's configured model
 
     @pytest.mark.asyncio
     async def test_retry_on_timeout(self, mock_config):
@@ -302,6 +335,56 @@ class TestFailoverProvider:
         )
 
         assert provider.get_default_model() == "anthropic/claude-3-5-sonnet"
+
+    def test_model_resolution_respects_provider_name(self):
+        """Test that model resolution respects provider_name over model keyword matching.
+
+        This is a regression test for the bug where using zhipu/minimax with
+        default model "anthropic/claude-opus-4-5" would incorrectly route to
+        Anthropic API instead of the specified provider.
+        """
+        from nanobot.providers.litellm_provider import LiteLLMProvider
+
+        # Test with zhipu provider and Anthropic default model
+        provider = LiteLLMProvider(
+            api_key="test-key",
+            provider_name="zhipu",
+            default_model="anthropic/claude-opus-4-5",
+        )
+
+        # The resolved model should use zhipu's prefix (zai/), not anthropic's
+        resolved = provider._resolve_model("anthropic/claude-opus-4-5")
+        # When provider_name is "zhipu", it should prefix with "zai/"
+        # Note: The exact prefix depends on the registry spec for zhipu
+        from nanobot.providers.registry import find_by_name
+        zhipu_spec = find_by_name("zhipu")
+        assert zhipu_spec is not None
+        assert zhipu_spec.litellm_prefix == "zai"
+        # The model should be prefixed with zai/ because we're using zhipu provider
+        assert resolved.startswith("zai/"), f"Expected model to start with 'zai/', got '{resolved}'"
+
+    def test_model_resolution_auto_detects_without_provider_name(self):
+        """Test that model resolution auto-detects provider when provider_name is not set.
+
+        This ensures backward compatibility - when provider_name is None,
+        we should fall back to keyword-based detection.
+        """
+        from nanobot.providers.litellm_provider import LiteLLMProvider
+
+        # Test without provider_name - should auto-detect from model keyword
+        provider = LiteLLMProvider(
+            api_key="test-key",
+            default_model="anthropic/claude-opus-4-5",
+        )
+
+        # Should auto-detect anthropic from model keyword "claude"
+        resolved = provider._resolve_model("anthropic/claude-opus-4-5")
+        # Anthropic has no prefix, so model should be unchanged
+        assert resolved == "anthropic/claude-opus-4-5"
+
+        # Test with deepseek model - should prefix with "deepseek/"
+        resolved = provider._resolve_model("deepseek-chat")
+        assert resolved.startswith("deepseek/")
 
 
 if __name__ == "__main__":
